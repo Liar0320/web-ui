@@ -670,6 +670,7 @@ async def run_with_stream(
     
     运行浏览器代理并实时向UI发送更新，包括截图和状态信息。
     在无头模式下，通过定期截图提供可视化反馈。
+    支持无限循环执行，直到用户手动停止。
     
     Args:
         与run_browser_agent函数参数相同
@@ -677,45 +678,58 @@ async def run_with_stream(
     Yields:
         list: 包含HTML内容和各种结果数据，用于实时更新UI
     """
-    global _global_agent
+    global _global_agent, _global_browser, _global_browser_context, _global_agent_state
 
     stream_vw = 80
     stream_vh = int(80 * window_h // window_w)
-    if not headless:
-        result = await run_browser_agent(
-            agent_type=agent_type,
-            llm_provider=llm_provider,
-            llm_model_name=llm_model_name,
-            llm_num_ctx=llm_num_ctx,
-            llm_temperature=llm_temperature,
-            llm_base_url=llm_base_url,
-            llm_api_key=llm_api_key,
-            use_own_browser=use_own_browser,
-            keep_browser_open=keep_browser_open,
-            headless=headless,
-            disable_security=disable_security,
-            window_w=window_w,
-            window_h=window_h,
-            save_recording_path=save_recording_path,
-            save_agent_history_path=save_agent_history_path,
-            save_trace_path=save_trace_path,
-            enable_recording=enable_recording,
-            task=task,
-            add_infos=add_infos,
-            max_steps=max_steps,
-            use_vision=use_vision,
-            max_actions_per_step=max_actions_per_step,
-            tool_calling_method=tool_calling_method,
-            chrome_cdp=chrome_cdp,
-            max_input_tokens=max_input_tokens
-        )
-        # Add HTML content at the start of the result array
-        yield [gr.update(visible=False)] + list(result)
-    else:
+    
+    # 初始化运行变量
+    html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
+    final_result = errors = model_actions = model_thoughts = ""
+    recording_gif = trace = history_file = None
+    
+    # 无限循环执行任务，直到用户手动停止
+    while True:
+        # 检查是否已经请求停止
+        is_stopped = False
+        
+        # 使用_global_agent_state检查全局停止标志
+        if _global_agent_state and _global_agent_state.is_stop_requested():
+            is_stopped = True
+            logger.info("任务已手动停止 (全局状态)")
+        
+        # 如果还需要继续检查，查看_global_agent
+        if not is_stopped and _global_agent is not None:
+            # 使用安全的方式检查
+            try:
+                if getattr(_global_agent, "state", None) is not None:
+                    if getattr(_global_agent.state, "stopped", False):
+                        is_stopped = True
+            except (AttributeError, Exception) as e:
+                # 如果发生任何错误，不认为任务已停止，记录错误并继续
+                logger.warning(f"检查代理停止状态时发生错误: {str(e)}")
+            
+        if is_stopped:
+            yield [
+                gr.HTML(value=html_content, visible=True),
+                final_result,
+                errors,
+                model_actions,
+                model_thoughts,
+                recording_gif,
+                trace,
+                history_file,
+                gr.update(value="Stop", interactive=True),  # 重新启用停止按钮
+                gr.update(interactive=True)  # 重新启用运行按钮
+            ]
+            break
+            
         try:
-            # Run the browser agent in the background
-            agent_task = asyncio.create_task(
-                run_browser_agent(
+            logger.info("开始执行新的任务循环...")
+            
+            if not headless:
+                # 非无头模式下直接运行
+                result = await run_browser_agent(
                     agent_type=agent_type,
                     llm_provider=llm_provider,
                     llm_model_name=llm_model_name,
@@ -742,87 +756,196 @@ async def run_with_stream(
                     chrome_cdp=chrome_cdp,
                     max_input_tokens=max_input_tokens
                 )
-            )
-
-            # Initialize values for streaming
-            html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
-            final_result = errors = model_actions = model_thoughts = ""
-            recording_gif = trace = history_file = None
-
-            # Periodically update the stream while the agent task is running
-            while not agent_task.done():
-                try:
-                    encoded_screenshot = await capture_screenshot(_global_browser_context)
-                    if encoded_screenshot is not None:
-                        html_content = f'<img src="data:image/jpeg;base64,{encoded_screenshot}" style="width:{stream_vw}vw; height:{stream_vh}vh ; border:1px solid #ccc;">'
-                    else:
-                        html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
-                except Exception as e:
-                    html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
-
-                if _global_agent and _global_agent.state.stopped:
-                    yield [
-                        gr.HTML(value=html_content, visible=True),
-                        final_result,
-                        errors,
-                        model_actions,
-                        model_thoughts,
-                        recording_gif,
-                        trace,
-                        history_file,
-                        gr.update(value="Stopping...", interactive=False),  # stop_button
-                        gr.update(interactive=False),  # run_button
-                    ]
+                # 更新UI
+                yield [gr.update(visible=False)] + list(result)
+                
+                # 再次检查是否需要停止循环
+                is_stopped = False
+                if _global_agent_state and _global_agent_state.is_stop_requested():
+                    is_stopped = True
+                
+                if not is_stopped and _global_agent is not None:
+                    try:
+                        if getattr(_global_agent, "state", None) is not None:
+                            if getattr(_global_agent.state, "stopped", False):
+                                is_stopped = True
+                    except (AttributeError, Exception):
+                        pass
+                        
+                if is_stopped:
                     break
-                else:
-                    yield [
-                        gr.HTML(value=html_content, visible=True),
-                        final_result,
-                        errors,
-                        model_actions,
-                        model_thoughts,
-                        recording_gif,
-                        trace,
-                        history_file,
-                        gr.update(),  # Re-enable stop button
-                        gr.update()  # Re-enable run button
-                    ]
-                await asyncio.sleep(0.1)
+                
+                # 延迟一小段时间后继续下一轮
+                await asyncio.sleep(1)
+                
+            else:
+                # 无头模式下
+                # 在后台运行代理
+                agent_task = asyncio.create_task(
+                    run_browser_agent(
+                        agent_type=agent_type,
+                        llm_provider=llm_provider,
+                        llm_model_name=llm_model_name,
+                        llm_num_ctx=llm_num_ctx,
+                        llm_temperature=llm_temperature,
+                        llm_base_url=llm_base_url,
+                        llm_api_key=llm_api_key,
+                        use_own_browser=use_own_browser,
+                        keep_browser_open=keep_browser_open,
+                        headless=headless,
+                        disable_security=disable_security,
+                        window_w=window_w,
+                        window_h=window_h,
+                        save_recording_path=save_recording_path,
+                        save_agent_history_path=save_agent_history_path,
+                        save_trace_path=save_trace_path,
+                        enable_recording=enable_recording,
+                        task=task,
+                        add_infos=add_infos,
+                        max_steps=max_steps,
+                        use_vision=use_vision,
+                        max_actions_per_step=max_actions_per_step,
+                        tool_calling_method=tool_calling_method,
+                        chrome_cdp=chrome_cdp,
+                        max_input_tokens=max_input_tokens
+                    )
+                )
 
-            # Once the agent task completes, get the results
-            try:
-                result = await agent_task
-                final_result, errors, model_actions, model_thoughts, recording_gif, trace, history_file, stop_button, run_button = result
-            except gr.Error:
-                final_result = ""
-                model_actions = ""
-                model_thoughts = ""
+                # 初始化值用于流式处理
+                html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
+                final_result = errors = model_actions = model_thoughts = ""
                 recording_gif = trace = history_file = None
 
-            except Exception as e:
-                errors = f"Agent error: {str(e)}"
+                # 周期性更新流，直到代理任务完成
+                while not agent_task.done():
+                    try:
+                        encoded_screenshot = await capture_screenshot(_global_browser_context)
+                        if encoded_screenshot is not None:
+                            html_content = f'<img src="data:image/jpeg;base64,{encoded_screenshot}" style="width:{stream_vw}vw; height:{stream_vh}vh ; border:1px solid #ccc;">'
+                        else:
+                            html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
+                    except Exception as e:
+                        html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
 
-            yield [
-                gr.HTML(value=html_content, visible=True),
-                final_result,
-                errors,
-                model_actions,
-                model_thoughts,
-                recording_gif,
-                trace,
-                history_file,
-                stop_button,
-                run_button
-            ]
+                    # 检查停止标志
+                    is_stopped = False
+                    if _global_agent_state and _global_agent_state.is_stop_requested():
+                        is_stopped = True
+                    
+                    if not is_stopped and _global_agent is not None:
+                        try:
+                            if getattr(_global_agent, "state", None) is not None:
+                                if getattr(_global_agent.state, "stopped", False):
+                                    is_stopped = True
+                        except (AttributeError, Exception):
+                            pass
+                    
+                    if is_stopped:
+                        yield [
+                            gr.HTML(value=html_content, visible=True),
+                            final_result,
+                            errors,
+                            model_actions,
+                            model_thoughts,
+                            recording_gif,
+                            trace,
+                            history_file,
+                            gr.update(value="Stopping...", interactive=False),  # stop_button
+                            gr.update(interactive=False),  # run_button
+                        ]
+                        # 取消后台任务
+                        agent_task.cancel()
+                        break
+                    else:
+                        yield [
+                            gr.HTML(value=html_content, visible=True),
+                            final_result,
+                            errors,
+                            model_actions,
+                            model_thoughts,
+                            recording_gif,
+                            trace,
+                            history_file,
+                            gr.update(),  # Re-enable stop button
+                            gr.update()  # Re-enable run button
+                        ]
+                    await asyncio.sleep(0.1)
 
+                # 如果任务已取消，则退出循环
+                if agent_task.cancelled():
+                    break
+                    
+                # 一旦代理任务完成，获取结果
+                try:
+                    result = await agent_task
+                    final_result, errors, model_actions, model_thoughts, recording_gif, trace, history_file, stop_button, run_button = result
+                except gr.Error:
+                    final_result = ""
+                    model_actions = ""
+                    model_thoughts = ""
+                    recording_gif = trace = history_file = None
+                except Exception as e:
+                    errors = f"Agent error: {str(e)}"
+
+                # 更新UI以显示当前任务结果
+                yield [
+                    gr.HTML(value=html_content, visible=True),
+                    final_result,
+                    errors,
+                    model_actions,
+                    model_thoughts,
+                    recording_gif,
+                    trace,
+                    history_file,
+                    gr.update(value="Stop", interactive=True),  # stop_button - 确保可以停止
+                    gr.update(interactive=True)  # run_button - 确保可以重新运行
+                ]
+                
+                # 检查是否需要停止
+                is_stopped = False
+                if _global_agent_state and _global_agent_state.is_stop_requested():
+                    is_stopped = True
+                
+                if not is_stopped and _global_agent is not None:
+                    try:
+                        if getattr(_global_agent, "state", None) is not None:
+                            if getattr(_global_agent.state, "stopped", False):
+                                is_stopped = True
+                    except (AttributeError, Exception):
+                        pass
+                        
+                if is_stopped:
+                    break
+                
+                # 在启动下一个循环前延迟一小段时间
+                await asyncio.sleep(1)
+                
+                # 重置代理状态，准备下一轮（保留代理实例但清除某些状态）
+                if _global_agent:
+                    # 重置代理状态但不停止它
+                    try:
+                        # 安全地重置consecutive_failures计数器
+                        if getattr(_global_agent, "state", None) is not None:
+                            agent_state = _global_agent.state
+                            # 检查agent_state的类型，确保它是CustomAgentState或包含consecutive_failures属性
+                            if hasattr(agent_state, "consecutive_failures"):
+                                # 使用setattr而不是直接赋值，避免类型检查错误
+                                setattr(agent_state, "consecutive_failures", 0)
+                                logger.info("已重置代理状态consecutive_failures计数器，准备下一轮任务")
+                    except (AttributeError, Exception) as e:
+                        logger.warning(f"重置代理状态时发生错误: {str(e)}")
+                
         except Exception as e:
             import traceback
+            error_msg = f"Error during task execution: {str(e)}\n{traceback.format_exc()}"
+            logger.error(error_msg)
+            
             yield [
                 gr.HTML(
-                    value=f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>",
+                    value=f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Error encountered...</h1>",
                     visible=True),
                 "",
-                f"Error: {str(e)}\n{traceback.format_exc()}",
+                error_msg,
                 "",
                 "",
                 None,
@@ -831,6 +954,9 @@ async def run_with_stream(
                 gr.update(value="Stop", interactive=True),  # Re-enable stop button
                 gr.update(interactive=True)  # Re-enable run button
             ]
+            
+            # 即使发生错误，也延迟一下并继续下一轮
+            await asyncio.sleep(2)
 
 
 # Define the theme map globally
@@ -1017,7 +1143,7 @@ def create_ui(theme_name="Ocean"):
                     llm_model_name = gr.Dropdown(
                         label="Model Name",
                         choices=utils.model_names['openai'],
-                        value="deepseek-chat-v3-0324:free",
+                        value="deepseek/deepseek-chat-v3-0324:free",
                         interactive=True,
                         allow_custom_value=True,  # Allow users to input custom model names
                         info="Select a model in the dropdown options or directly type a custom model name"
