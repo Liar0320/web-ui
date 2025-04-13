@@ -36,6 +36,7 @@ from src.controller.custom_controller import CustomController
 from gradio.themes import Citrus, Default, Glass, Monochrome, Ocean, Origin, Soft, Base
 from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot, MissingAPIKeyError
 from src.utils import utils
+from src.utils.report_manager import get_report_manager
 
 # Global variables for persistence
 _global_browser = None
@@ -47,6 +48,9 @@ _global_agent_state = AgentState()
 
 # webui config
 webui_config_manager = utils.ConfigManager()
+
+# 获取全局报表管理器
+_global_report_manager = get_report_manager()
 
 
 def scan_and_register_components(blocks):
@@ -697,7 +701,7 @@ async def run_with_stream(
     Yields:
         list: 包含HTML内容和各种结果数据，用于实时更新UI
     """
-    global _global_agent, _global_browser, _global_browser_context, _global_agent_state
+    global _global_agent, _global_browser, _global_browser_context, _global_agent_state, _global_report_manager
 
     stream_vw = 80
     stream_vh = int(80 * window_h // window_w)
@@ -747,61 +751,121 @@ async def run_with_stream(
         try:
             logger.info("开始执行新的任务循环...")
             
+            # 创建新的任务记录
+            current_task_record = _global_report_manager.start_task_record(task)
+            logger.info(f"已开始记录任务: {current_task_record.task_id}")
+            
             if not headless:
                 # 非无头模式下直接运行
-                result = await run_browser_agent(
-                    agent_type=agent_type,
-                    llm_provider=llm_provider,
-                    llm_model_name=llm_model_name,
-                    llm_num_ctx=llm_num_ctx,
-                    llm_temperature=llm_temperature,
-                    llm_base_url=llm_base_url,
-                    llm_api_key=llm_api_key,
-                    use_own_browser=use_own_browser,
-                    keep_browser_open=keep_browser_open,
-                    headless=headless,
-                    disable_security=disable_security,
-                    window_w=window_w,
-                    window_h=window_h,
-                    save_recording_path=save_recording_path,
-                    save_agent_history_path=save_agent_history_path,
-                    save_trace_path=save_trace_path,
-                    enable_recording=enable_recording,
-                    task=task,
-                    add_infos=add_infos,
-                    max_steps=max_steps,
-                    use_vision=use_vision,
-                    max_actions_per_step=max_actions_per_step,
-                    tool_calling_method=tool_calling_method,
-                    chrome_cdp=chrome_cdp,
-                    max_input_tokens=max_input_tokens
-                )
-                # 更新UI
-                yield [gr.update(visible=False)] + list(result)
-                
-                # 再次检查是否需要停止循环
-                is_stopped = False
-                if _global_agent_state and _global_agent_state.is_stop_requested():
-                    is_stopped = True
-                
-                if not is_stopped and _global_agent is not None:
-                    try:
-                        if getattr(_global_agent, "state", None) is not None:
-                            if getattr(_global_agent.state, "stopped", False):
-                                is_stopped = True
-                    except (AttributeError, Exception):
-                        pass
-                        
-                if is_stopped:
-                    break
-                
-                # 如果不是循环模式，设置continue_loop为False使其只执行一次
-                if not loop:
-                    continue_loop = False
-                
-                # 延迟一小段时间后继续下一轮
-                await asyncio.sleep(1)
-                
+                try:
+                    result = await run_browser_agent(
+                        agent_type=agent_type,
+                        llm_provider=llm_provider,
+                        llm_model_name=llm_model_name,
+                        llm_num_ctx=llm_num_ctx,
+                        llm_temperature=llm_temperature,
+                        llm_base_url=llm_base_url,
+                        llm_api_key=llm_api_key,
+                        use_own_browser=use_own_browser,
+                        keep_browser_open=keep_browser_open,
+                        headless=headless,
+                        disable_security=disable_security,
+                        window_w=window_w,
+                        window_h=window_h,
+                        save_recording_path=save_recording_path,
+                        save_agent_history_path=save_agent_history_path,
+                        save_trace_path=save_trace_path,
+                        enable_recording=enable_recording,
+                        task=task,
+                        add_infos=add_infos,
+                        max_steps=max_steps,
+                        use_vision=use_vision,
+                        max_actions_per_step=max_actions_per_step,
+                        tool_calling_method=tool_calling_method,
+                        chrome_cdp=chrome_cdp,
+                        max_input_tokens=max_input_tokens
+                    )
+                    
+                    # 初始化结果变量
+                    final_result = ""
+                    errors = ""
+                    
+                    # 安全地解析返回结果
+                    if isinstance(result, tuple):
+                        # 提取返回结果
+                        results_list = list(result)
+                        if len(results_list) > 0:
+                            final_result = results_list[0]
+                        if len(results_list) > 1:
+                            errors = results_list[1]
+                            
+                        # 更新UI
+                        yield [gr.update(visible=False)] + results_list
+                    else:
+                        # 处理意外的返回值格式
+                        logger.warning(f"代理任务返回值格式异常: {type(result)} - {result}")
+                        final_result = str(result) if result else ""
+                        errors = "意外的返回值格式"
+                        yield [
+                            gr.update(visible=False),
+                            final_result,
+                            errors,
+                            "",  # model_actions
+                            "",  # model_thoughts
+                            None,  # recording_gif
+                            None,  # trace
+                            None,  # history_file
+                            gr.update(value="Stop", interactive=True),  # stop_button
+                            gr.update(interactive=True)  # run_button
+                        ]
+                    
+                    # 任务完成，记录结果
+                    success = errors == "" or errors is None
+                    _global_report_manager.end_task_record(success, errors if not success else None)
+                    logger.info(f"任务已完成: {'成功' if success else '失败'}")
+                    
+                except Exception as e:
+                    import traceback
+                    error_msg = f"Error during task execution: {str(e)}\n{traceback.format_exc()}"
+                    logger.error(error_msg)
+                    
+                    # 记录任务异常
+                    _global_report_manager.end_task_record(False, error_msg)
+                    
+                    yield [
+                        gr.update(visible=False),
+                        "",  # final_result
+                        error_msg,  # errors
+                        "",  # model_actions
+                        "",  # model_thoughts
+                        None,  # recording_gif
+                        None,  # trace
+                        None,  # history_file
+                        gr.update(value="Stop", interactive=True),  # stop_button
+                        gr.update(interactive=True)  # run_button
+                    ]
+                    
+                    # 非无头模式下的循环控制
+                    is_stopped = False
+                    if _global_agent_state and _global_agent_state.is_stop_requested():
+                        is_stopped = True
+                    
+                    if not is_stopped and _global_agent is not None:
+                        try:
+                            if getattr(_global_agent, "state", None) is not None:
+                                if getattr(_global_agent.state, "stopped", False):
+                                    is_stopped = True
+                        except (AttributeError, Exception):
+                            pass
+                            
+                    # 如果用户请求停止或者不是循环模式，则退出循环
+                    if is_stopped or not loop:
+                        logger.info(f"任务完成，{'已手动停止' if is_stopped else '非循环模式，不再继续'}")
+                        break
+                    
+                    # 循环模式下需要延迟一段时间后继续下一轮
+                    logger.info("循环模式：准备开始下一轮执行...")
+                    await asyncio.sleep(1)
             else:
                 # 无头模式下
                 # 在后台运行代理
@@ -848,6 +912,38 @@ async def run_with_stream(
                             html_content = f'<img src="data:image/jpeg;base64,{encoded_screenshot}" style="width:{stream_vw}vw; height:{stream_vh}vh ; border:1px solid #ccc;">'
                         else:
                             html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
+                            
+                        # 尝试获取当前URL并记录
+                        try:
+                            if _global_browser_context:
+                                # 记录是否已成功记录URL
+                                recorded_url = False
+                                
+                                # 尝试获取页面URL
+                                try:
+                                    # 检查get_current_page是否为方法
+                                    get_page_attr = getattr(_global_browser_context, "get_current_page", None)
+                                    if callable(get_page_attr):
+                                        page = await get_page_attr()
+                                        if page:
+                                            url = await page.url()
+                                            if url and url != "about:blank":
+                                                _global_report_manager.record_url(url)
+                                                logger.debug(f"记录URL(方法1): {url}")
+                                                recorded_url = True
+                                except Exception as e:
+                                    logger.debug(f"尝试方法1获取URL失败: {str(e)}")
+                                
+                                # 如果无法通过上述方法获取，尝试捕获任何可能的错误
+                                if not recorded_url:
+                                    try:
+                                        # 尝试最简单的截图方法，可能会更新当前页面信息
+                                        await capture_screenshot(_global_browser_context)
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            logger.debug(f"访问浏览器上下文时出错: {str(e)}")
+                            
                     except Exception as e:
                         html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
 
@@ -879,6 +975,11 @@ async def run_with_stream(
                         ]
                         # 取消后台任务
                         agent_task.cancel()
+                        
+                        # 记录任务取消
+                        _global_report_manager.end_task_record(False, "任务被用户取消")
+                        logger.info("任务被用户取消")
+                        
                         break
                     else:
                         yield [
@@ -902,14 +1003,62 @@ async def run_with_stream(
                 # 一旦代理任务完成，获取结果
                 try:
                     result = await agent_task
-                    final_result, errors, model_actions, model_thoughts, recording_gif, trace, history_file, stop_button, run_button = result
+                    
+                    # 初始化结果变量
+                    final_result = ""
+                    errors = ""
+                    model_actions = ""
+                    model_thoughts = ""
+                    recording_gif = None
+                    trace = None
+                    history_file = None
+                    
+                    # 安全地解析返回结果
+                    if isinstance(result, tuple):
+                        # 提取最多前7个元素
+                        results_list = list(result)
+                        if len(results_list) > 0:
+                            final_result = results_list[0]
+                        if len(results_list) > 1:
+                            errors = results_list[1]
+                        if len(results_list) > 2:
+                            model_actions = results_list[2]
+                        if len(results_list) > 3:
+                            model_thoughts = results_list[3]
+                        if len(results_list) > 4:
+                            recording_gif = results_list[4]
+                        if len(results_list) > 5:
+                            trace = results_list[5]
+                        if len(results_list) > 6:
+                            history_file = results_list[6]
+                        # 忽略可能的其他元素（比如按钮更新）
+                    else:
+                        # 处理意外的返回值格式
+                        logger.warning(f"代理任务返回值格式异常: {type(result)} - {result}")
+                        final_result = str(result) if result else ""
+                        errors = "意外的返回值格式"
+
+                    # 记录任务完成
+                    success = errors == "" or errors is None
+                    _global_report_manager.end_task_record(success, errors if not success else None)
+                    logger.info(f"任务已完成: {'成功' if success else '失败'}")
+                    
                 except gr.Error:
                     final_result = ""
                     model_actions = ""
                     model_thoughts = ""
                     recording_gif = trace = history_file = None
+                    
+                    # 记录任务失败
+                    _global_report_manager.end_task_record(False, "Gradio错误")
+                    logger.info("任务因Gradio错误而失败")
+                    
                 except Exception as e:
                     errors = f"Agent error: {str(e)}"
+                    
+                    # 记录任务失败
+                    _global_report_manager.end_task_record(False, str(e))
+                    logger.info(f"任务失败: {str(e)}")
 
                 # 更新UI以显示当前任务结果
                 yield [
@@ -925,7 +1074,7 @@ async def run_with_stream(
                     gr.update(interactive=True)  # run_button - 确保可以重新运行
                 ]
                 
-                # 检查是否需要停止
+                # 检查是否需要停止循环
                 is_stopped = False
                 if _global_agent_state and _global_agent_state.is_stop_requested():
                     is_stopped = True
@@ -938,14 +1087,13 @@ async def run_with_stream(
                     except (AttributeError, Exception):
                         pass
                         
-                if is_stopped:
+                # 如果用户请求停止或者不是循环模式，则退出循环
+                if is_stopped or not loop:
+                    logger.info(f"任务完成，{'已手动停止' if is_stopped else '非循环模式，不再继续'}")
                     break
                 
-                # 如果不是循环模式，设置continue_loop为False使其只执行一次
-                if not loop:
-                    continue_loop = False
-                    
-                # 在启动下一个循环前延迟一小段时间
+                # 循环模式下需要延迟一段时间后继续下一轮
+                logger.info("循环模式：准备开始下一轮执行...")
                 await asyncio.sleep(1)
                 
                 # 重置代理状态，准备下一轮（保留代理实例但清除某些状态）
@@ -967,6 +1115,11 @@ async def run_with_stream(
             import traceback
             error_msg = f"Error during task execution: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_msg)
+            
+            # 记录任务异常
+            if _global_report_manager.current_task:
+                _global_report_manager.end_task_record(False, error_msg)
+                logger.info("任务因异常而失败")
             
             yield [
                 gr.HTML(
@@ -1459,6 +1612,74 @@ def create_ui(theme_name="Ocean"):
                     fn=list_recordings,
                     inputs=save_recording_path,
                     outputs=recordings_gallery
+                )
+
+            with gr.TabItem("📊 任务报表", id=9, visible=True):
+                refresh_report_button = gr.Button("🔄 刷新报表数据", variant="secondary")
+                export_excel_button = gr.Button("📑 导出Excel报表", variant="primary")
+                report_status = gr.Textbox(label="状态", interactive=False)
+                
+                with gr.Row():
+                    with gr.Column():
+                        gr.Markdown("### 📈 统计信息")
+                        stats_output = gr.JSON(label="累计统计", interactive=False)
+                    
+                    with gr.Column():
+                        gr.Markdown("### 📅 最近任务")
+                        recent_tasks_output = gr.Dataframe(
+                            headers=["任务ID", "任务描述", "开始时间", "执行时长", "是否成功"],
+                            wrap=True
+                        )
+                
+                report_file_output = gr.File(label="下载Excel报表", interactive=False, visible=False)
+                
+                # 函数：获取报表数据
+                def get_report_data():
+                    stats = _global_report_manager.get_statistics()
+                    
+                    # 获取最近任务
+                    recent_tasks = []
+                    for task in reversed(_global_report_manager.task_history[-10:]):  # 最近10条
+                        recent_tasks.append([
+                            task.task_id[:8] + "...",  # 截断ID
+                            task.task_description[:50] + "..." if len(task.task_description) > 50 else task.task_description,
+                            task.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                            task.format_duration() if task.duration else "未完成",
+                            "✅" if task.success else "❌"
+                        ])
+                    
+                    return stats, recent_tasks
+                
+                # 函数：导出Excel报表
+                def export_excel_report():
+                    try:
+                        excel_path = _global_report_manager.export_excel()
+                        if excel_path and os.path.exists(excel_path):
+                            return f"报表已导出至: {excel_path}", excel_path
+                        else:
+                            return "导出报表失败，请查看日志", None
+                    except Exception as e:
+                        return f"导出报表时出错: {str(e)}", None
+                
+                # 绑定刷新按钮
+                refresh_report_button.click(
+                    fn=get_report_data,
+                    inputs=[],
+                    outputs=[stats_output, recent_tasks_output]
+                )
+                
+                # 绑定导出按钮
+                export_excel_button.click(
+                    fn=export_excel_report,
+                    inputs=[],
+                    outputs=[report_status, report_file_output]
+                )
+                
+                # 页面加载时自动刷新一次报表数据
+                demo.load(
+                    fn=get_report_data,
+                    inputs=[],
+                    outputs=[stats_output, recent_tasks_output]
                 )
 
             with gr.TabItem("📁 UI Configuration", id=8):
