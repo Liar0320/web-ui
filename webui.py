@@ -703,6 +703,11 @@ async def run_with_stream(
     """
     global _global_agent, _global_browser, _global_browser_context, _global_agent_state, _global_report_manager
 
+    # 在开始任务前清除停止标志
+    if _global_agent_state:
+        _global_agent_state.clear_stop()
+        logger.info("已重置停止标志，准备开始任务")
+
     stream_vw = 80
     stream_vh = int(80 * window_h // window_w)
     
@@ -1447,6 +1452,7 @@ def create_ui(theme_name="Ocean"):
                 with gr.Row():
                     run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
                     stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1)
+                    reset_button = gr.Button("🔄 Reset", variant="secondary", scale=1)
 
                 with gr.Row():
                     browser_view = gr.HTML(
@@ -1495,11 +1501,29 @@ def create_ui(theme_name="Ocean"):
                 markdown_output_display = gr.Markdown(label="Research Report")
                 markdown_download = gr.File(label="Download Research Report")
 
+            # 添加重置功能，清除停止标志
+            async def reset_agent_state():
+                global _global_agent_state
+                if _global_agent_state:
+                    _global_agent_state.clear_stop()
+                    logger.info("已手动重置代理状态，清除停止标志")
+                return (
+                    gr.update(interactive=True),  # run_button
+                    "已重置代理状态，可以重新运行任务"  # 状态消息
+                )
+
             # Bind the stop button click event after errors_output is defined
             stop_button.click(
                 fn=stop_agent,
                 inputs=[],
                 outputs=[stop_button, run_button],
+            )
+            
+            # Bind the reset button click event
+            reset_button.click(
+                fn=reset_agent_state,
+                inputs=[],
+                outputs=[run_button, errors_output]
             )
 
             # Run button click handler
