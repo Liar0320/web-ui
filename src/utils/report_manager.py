@@ -219,8 +219,8 @@ class ReportManager:
                 record = {
                     "任务ID": task.task_id,
                     "任务描述": task.task_description,
-                    "开始时间": task.start_time,
-                    "结束时间": task.end_time,
+                    "开始时间": task.start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "结束时间": task.end_time.strftime("%Y-%m-%d %H:%M:%S") if task.end_time else "",
                     "执行时长": task.format_duration(),
                     "访问页面链路": "\n".join(task.urls),
                     "是否成功": "成功" if task.success else "失败",
@@ -266,7 +266,7 @@ class ReportManager:
                 duration_str = f"{int(hours)}小时{int(minutes)}分钟{int(seconds)}秒"
                 
                 record = {
-                    "日期": date_str,
+                    "日期": date_str,  # 已经是格式化的日期字符串，不需要再处理
                     "执行次数": data["total"],
                     "成功次数": data["success"],
                     "失败次数": data["failed"],
@@ -280,7 +280,7 @@ class ReportManager:
             try:
                 # 创建Excel文件
                 logger.info(f"尝试创建Excel文件: {output_path}")
-                with pd.ExcelWriter(output_path) as writer:
+                with pd.ExcelWriter(output_path, engine='openpyxl', datetime_format='YYYY-MM-DD HH:MM:SS') as writer:
                     logger.info("写入任务执行记录表")
                     df_tasks.to_excel(writer, sheet_name='任务执行记录', index=False)
                     logger.info("写入累计统计表")
