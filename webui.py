@@ -1,11 +1,19 @@
 import pdb
 import logging
+import json
+import time
+import uuid
+import glob
+import base64
+import argparse
+import asyncio
+from datetime import datetime
+from typing import Dict, Optional, List
 
 from dotenv import load_dotenv
 
 load_dotenv()
 import os
-import glob
 import asyncio
 import argparse
 import os
@@ -37,20 +45,17 @@ from gradio.themes import Citrus, Default, Glass, Monochrome, Ocean, Origin, Sof
 from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot, MissingAPIKeyError
 from src.utils import utils
 from src.utils.report_manager import get_report_manager
+from src.utils.deep_research import deep_research
 
-# Global variables for persistence
+# Global variables
+_global_agent = None
 _global_browser = None
 _global_browser_context = None
-_global_agent = None
-
-# Create the global agent state instance
 _global_agent_state = AgentState()
-
-# webui config
-webui_config_manager = utils.ConfigManager()
-
-# 获取全局报表管理器
 _global_report_manager = get_report_manager()
+
+# 初始化配置管理器（默认值，在main中会被更新）
+webui_config_manager = utils.ConfigAutosaveManager(autosave_dir="./tmp/webui_settings")
 
 
 def scan_and_register_components(blocks):
@@ -1239,6 +1244,18 @@ def create_ui(theme_name="Ocean"):
     Returns:
         gr.Blocks: Gradio界面对象
     """
+    # 确保全局配置管理器已初始化
+    global webui_config_manager
+    if webui_config_manager is None:
+        webui_config_manager = utils.ConfigAutosaveManager()
+        
+    # 确保配置目录存在
+    os.makedirs(webui_config_manager.autosave_dir, exist_ok=True)
+    
+    # 设置主题
+    theme = theme_map.get(theme_name, Ocean())
+    
+    # 主UI开始
     css = """
     .gradio-container {
         width: 60vw !important; 
@@ -1259,7 +1276,7 @@ def create_ui(theme_name="Ocean"):
     """
 
     with gr.Blocks(
-            title="Browser Use WebUI", theme=theme_map[theme_name], css=css
+            title="Browser Use WebUI", theme=theme, css=css
     ) as demo:
         with gr.Row():
             gr.Markdown(
@@ -1325,7 +1342,7 @@ def create_ui(theme_name="Ocean"):
             with gr.TabItem("🔧 LLM Settings", id=2):
                 with gr.Group():
                     llm_provider = gr.Dropdown(
-                        choices=[provider for provider, model in utils.model_names.items()],
+                        choices=[provider for provider in utils.model_names.keys()],
                         label="LLM Provider",
                         value="deepseek",
                         info="Select your preferred language model provider",
@@ -1333,7 +1350,7 @@ def create_ui(theme_name="Ocean"):
                     )
                     llm_model_name = gr.Dropdown(
                         label="Model Name",
-                        choices=utils.model_names['openai'],
+                        choices=utils.model_names['deepseek'],
                         value="deepseek/deepseek-chat-v3-0324:free",
                         interactive=True,
                         allow_custom_value=True,  # Allow users to input custom model names
@@ -1755,15 +1772,36 @@ def create_ui(theme_name="Ocean"):
                 with gr.Row():
                     load_config_button = gr.Button("Load Config", variant="primary")
                     save_config_button = gr.Button("Save UI Settings", variant="primary")
+                
+                # 添加自动保存配置选项
+                auto_save_config = gr.Checkbox(
+                    label="自动保存配置", 
+                    value=True,
+                    info="启用时，所有UI配置更改将自动保存到默认配置文件"
+                )
 
                 config_status = gr.Textbox(
                     label="Status",
                     lines=2,
                     interactive=False
                 )
+                
+                # 添加自动保存开关功能
+                def toggle_autosave(enabled):
+                    global webui_config_manager
+                    return webui_config_manager.set_autosave_enabled(enabled)
+                
+                # 保存按钮事件
                 save_config_button.click(
                     fn=save_current_config,
                     inputs=[],  # 不需要输入参数
+                    outputs=[config_status]
+                )
+                
+                # 自动保存切换事件
+                auto_save_config.change(
+                    fn=toggle_autosave,
+                    inputs=[auto_save_config],
                     outputs=[config_status]
                 )
 
@@ -1785,7 +1823,7 @@ def create_ui(theme_name="Ocean"):
         keep_browser_open.change(fn=close_global_browser)
 
         scan_and_register_components(demo)
-        global webui_config_manager
+        # 获取所有可配置组件
         all_components = webui_config_manager.get_all_components()
 
         load_config_button.click(
@@ -1809,6 +1847,22 @@ def create_ui(theme_name="Ocean"):
                 recent_tasks_output
             ]
         )
+        
+        # 自动加载默认配置
+        try:
+            # 检查是否存在默认配置
+            default_config = webui_config_manager.load_default_config()
+            if default_config:
+                logger.info("发现默认配置文件，正在自动加载...")
+                # 在UI加载时应用默认配置
+                demo.load(
+                    fn=lambda: webui_config_manager.apply_default_config(),
+                    inputs=None,
+                    outputs=all_components
+                )
+        except Exception as e:
+            logger.error(f"加载默认配置失败: {str(e)}")
+            
     return demo
 
 
@@ -1817,7 +1871,15 @@ def main():
     parser.add_argument("--ip", type=str, default="127.0.0.1", help="IP address to bind to")
     parser.add_argument("--port", type=int, default=7788, help="Port to listen on")
     parser.add_argument("--theme", type=str, default="Ocean", choices=theme_map.keys(), help="Theme to use for the UI")
+    parser.add_argument("--config-dir", type=str, default="./tmp/webui_settings", help="Directory to store UI configuration")
     args = parser.parse_args()
+
+    # 使用命令行参数指定的配置目录更新全局配置
+    global webui_config_manager
+    webui_config_manager = utils.ConfigAutosaveManager(autosave_dir=args.config_dir)
+    
+    # 确保目录存在
+    os.makedirs(args.config_dir, exist_ok=True)
 
     demo = create_ui(theme_name=args.theme)
     demo.launch(server_name=args.ip, server_port=args.port)

@@ -7,6 +7,7 @@ import requests
 import json
 import gradio as gr
 import uuid
+import logging
 
 from langchain_anthropic import ChatAnthropic
 from langchain_mistralai import ChatMistralAI
@@ -176,11 +177,11 @@ def get_llm_model(provider: str, **kwargs):
 model_names = {
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner", "deepseek/deepseek-chat-v3-0324:free"],
     "google": ["gemini-2.0-flash", "gemini-2.0-flash-thinking-exp", "gemini-1.5-flash-latest",
                "gemini-1.5-flash-8b-latest", "gemini-2.0-flash-thinking-exp-01-21", "gemini-2.0-pro-exp-02-05"],
     "ollama": ["qwen2.5:7b", "qwen2.5:14b", "qwen2.5:32b", "qwen2.5-coder:14b", "qwen2.5-coder:32b", "llama2:7b",
-               "deepseek-r1:14b", "deepseek-r1:32b","deepseek/deepseek-chat-v3-0324:free"],
+               "deepseek-r1:7b","deepseek-r1:14b", "deepseek-r1:32b","deepseek/deepseek-chat-v3-0324:free"],
     "azure_openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo"],
     "mistral": ["pixtral-large-latest", "mistral-large-latest", "mistral-small-latest", "ministral-8b-latest"],
     "alibaba": ["qwen-plus", "qwen-max", "qwen-turbo", "qwen-long"],
@@ -192,20 +193,37 @@ model_names = {
 # Callback to update the model name dropdown based on the selected provider
 def update_model_dropdown(llm_provider, api_key=None, base_url=None):
     """
-    Update the model name dropdown with predefined models for the selected provider.
+    更新模型下拉列表的选项，根据用户选择的模型提供商。
+    
+    Args:
+        llm_provider: 模型提供商名称
+        api_key: 可选的API密钥
+        base_url: 可选的基础URL
+        
+    Returns:
+        gr.update对象，包含更新后的下拉菜单选项和值
     """
     import gradio as gr
-    # Use API keys from .env if not provided
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    logger.info(f"更新模型下拉菜单，提供商: {llm_provider}")
+    
+    # 使用环境变量中的API密钥（如果未提供）
     if not api_key:
         api_key = os.getenv(f"{llm_provider.upper()}_API_KEY", "")
     if not base_url:
         base_url = os.getenv(f"{llm_provider.upper()}_BASE_URL", "")
 
-    # Use predefined models for the selected provider
+    # 使用预定义的模型列表
     if llm_provider in model_names:
-        return gr.Dropdown(choices=model_names[llm_provider], value=model_names[llm_provider][0], interactive=True)
+        model_list = model_names[llm_provider]
+        default_model = model_list[0] if model_list else ""
+        logger.info(f"找到提供商 {llm_provider} 的 {len(model_list)} 个模型，默认值: {default_model}")
+        return gr.update(choices=model_list, value=default_model)
     else:
-        return gr.Dropdown(choices=[], value="", interactive=True, allow_custom_value=True)
+        logger.warning(f"未找到提供商 {llm_provider} 的模型列表")
+        return gr.update(choices=[], value="", allow_custom_value=True)
 
 
 class MissingAPIKeyError(Exception):
@@ -350,3 +368,136 @@ def save_config_to_file(settings, save_dir="./tmp/webui_settings"):
     with open(config_file, 'w') as f:
         json.dump(settings, f, indent=2)
     return f"Configuration saved to {config_file}"
+
+
+def save_config_to_default_file(settings, save_dir="./tmp/webui_settings"):
+    """Save the current settings to a default.json file that will be loaded automatically on startup."""
+    os.makedirs(save_dir, exist_ok=True)
+    config_file = os.path.join(save_dir, "default.json")
+    with open(config_file, 'w') as f:
+        json.dump(settings, f, indent=2)
+    return f"Configuration saved to {config_file}"
+
+
+class ConfigAutosaveManager(ConfigManager):
+    """扩展ConfigManager类，添加自动保存功能"""
+    
+    def __init__(self, autosave_dir="./tmp/webui_settings", default_config_name="default.json"):
+        super().__init__()
+        self.autosave_dir = autosave_dir
+        self.default_config_name = default_config_name
+        self.default_config_path = os.path.join(autosave_dir, default_config_name)
+        self.component_change_handlers = {}
+        
+        # 确保保存目录存在
+        os.makedirs(autosave_dir, exist_ok=True)
+    
+    def register_component(self, name: str, component):
+        """注册组件并添加变更监听器"""
+        super().register_component(name, component)
+        
+        # 为支持change事件的组件添加自动保存功能
+        if hasattr(component, "change"):
+            # 存储原始change事件
+            self.component_change_handlers[name] = getattr(component, "_event_triggers", {}).get("change", [])
+            
+            # 添加自动保存回调
+            component.change(
+                fn=lambda value, _name=name: self._on_component_change(_name, value),
+                inputs=[component],
+                outputs=[]
+            )
+            
+        return component
+    
+    def _on_component_change(self, component_name, new_value):
+        """组件值变更时自动保存配置"""
+        try:
+            # 更新组件的值
+            if component_name in self.components:
+                component = self.components[component_name]
+                if hasattr(component, "value"):
+                    component.value = new_value
+                    logging.getLogger(__name__).debug(f"组件 {component_name} 值已更新为: {new_value}")
+            
+            # 检查是否启用了自动保存 (通过UI组件的值)
+            auto_save_enabled = True  # 默认启用
+            
+            # 遍历所有组件查找自动保存开关
+            for name, component in self.components.items():
+                if name.endswith("自动保存配置") and hasattr(component, "value"):
+                    auto_save_enabled = component.value
+                    break
+            
+            if auto_save_enabled:
+                self.autosave_current_config()
+            return None
+        except Exception as e:
+            logging.getLogger(__name__).error(f"自动保存配置失败: {str(e)}")
+            return None
+    
+    def autosave_current_config(self):
+        """自动保存当前配置到默认文件"""
+        current_config = {}
+        for name in self.component_order:
+            component = self.components[name]
+            # 获取组件当前值
+            current_config[name] = getattr(component, "value", None)
+        
+        # 保存到默认配置文件
+        return save_config_to_default_file(current_config, self.autosave_dir)
+    
+    def load_default_config(self):
+        """加载默认配置文件"""
+        if os.path.exists(self.default_config_path):
+            return load_config_from_file(self.default_config_path)
+        return None
+    
+    def set_autosave_enabled(self, enabled: bool):
+        """启用或禁用自动保存功能"""
+        # 查找并更新自动保存组件
+        for name, component in self.components.items():
+            if name.endswith("自动保存配置") and hasattr(component, "value"):
+                component.value = enabled
+                
+        # 如果启用，立即保存当前配置
+        if enabled:
+            self.autosave_current_config()
+            
+        return f"自动保存已{'启用' if enabled else '禁用'}"
+    
+    def apply_default_config(self):
+        """应用默认配置到UI组件"""
+        logger = logging.getLogger(__name__)
+        
+        config = self.load_default_config()
+        if not config or not isinstance(config, dict):
+            logger.warning("没有找到默认配置或配置格式不正确")
+            return None
+            
+        logger.info(f"正在应用默认配置，共 {len(config)} 个配置项")
+        
+        # 准备所有组件的更新
+        updates = []
+        for name in self.component_order:
+            if name in config:
+                component = self.components[name]
+                saved_value = config[name]
+                
+                # 如果是LLM Provider，打印更详细的信息
+                if "LLM Provider" in name:
+                    logger.info(f"处理LLM Provider配置: {name} = {saved_value}, 组件类型: {type(component).__name__}")
+                    
+                # 直接设置组件值
+                if hasattr(component, "value"):
+                    old_value = component.value
+                    component.value = saved_value
+                    logger.debug(f"设置组件值: {name} 从 {old_value} 更新为 {saved_value}")
+                    
+                # 返回更新指令
+                updates.append(gr.update(value=saved_value))
+            else:
+                logger.debug(f"配置中未找到组件: {name}")
+                updates.append(gr.update())
+                
+        return updates
