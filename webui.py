@@ -806,7 +806,9 @@ async def run_with_stream(
                         ]
                     
                     # 任务完成，记录结果
-                    success = errors == "" or errors is None
+                    # 判断成功条件：errors为空或者final_result不为空
+                    success_condition = (errors == "" or errors is None) or (final_result and isinstance(final_result, str) and len(final_result.strip()) > 0)
+                    success = bool(success_condition)
                     _global_report_manager.end_task_record(success, errors if not success else None)
                     logger.info(f"任务已完成: {'成功' if success else '失败'}")
                     
@@ -993,7 +995,9 @@ async def run_with_stream(
                         errors = "意外的返回值格式"
 
                     # 记录任务完成
-                    success = errors == "" or errors is None
+                    # 判断成功条件：errors为空或者final_result不为空
+                    success_condition = (errors == "" or errors is None) or (final_result and isinstance(final_result, str) and len(final_result.strip()) > 0)
+                    success = bool(success_condition)
                     _global_report_manager.end_task_record(success, errors if not success else None)
                     logger.info(f"任务已完成: {'成功' if success else '失败'}")
                     
