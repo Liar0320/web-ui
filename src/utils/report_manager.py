@@ -119,17 +119,48 @@ class ReportManager:
         # 计算总运行时长（秒）
         total_duration = sum(task.duration or 0 for task in self.task_history)
         
+        # 计算成功率
+        success_rate = 0
+        if total_executions > 0:
+            success_rate = (successful_executions / total_executions) * 100
+            
+        # 计算平均运行时长
+        avg_duration = 0
+        if total_executions > 0:
+            avg_duration = total_duration / total_executions
+            
+        # 计算成功任务的平均运行时长
+        successful_tasks_duration = sum(task.duration or 0 for task in self.task_history if task.success)
+        avg_successful_duration = 0
+        if successful_executions > 0:
+            avg_successful_duration = successful_tasks_duration / successful_executions
+        
         # 格式化总运行时长
         minutes, seconds = divmod(total_duration, 60)
         hours, minutes = divmod(minutes, 60)
         total_duration_formatted = f"{int(hours)}小时{int(minutes)}分钟{int(seconds)}秒"
         
+        # 格式化平均运行时长
+        minutes, seconds = divmod(avg_duration, 60)
+        hours, minutes = divmod(minutes, 60)
+        avg_duration_formatted = f"{int(hours)}小时{int(minutes)}分钟{int(seconds)}秒"
+        
+        # 格式化成功任务平均运行时长
+        minutes, seconds = divmod(avg_successful_duration, 60)
+        hours, minutes = divmod(minutes, 60)
+        avg_successful_duration_formatted = f"{int(hours)}小时{int(minutes)}分钟{int(seconds)}秒"
+        
         return {
             "total_executions": total_executions,
             "successful_executions": successful_executions,
             "failed_executions": failed_executions,
+            "success_rate": f"{success_rate:.2f}%",
             "total_duration": total_duration,
-            "total_duration_formatted": total_duration_formatted
+            "total_duration_formatted": total_duration_formatted,
+            "avg_duration": avg_duration,
+            "avg_duration_formatted": avg_duration_formatted,
+            "avg_successful_duration": avg_successful_duration,
+            "avg_successful_duration_formatted": avg_successful_duration_formatted
         }
     
     def load_history(self):

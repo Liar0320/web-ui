@@ -706,45 +706,31 @@ async def run_with_stream(
     stream_vw = 80
     stream_vh = int(80 * window_h // window_w)
     
-    # 初始化运行变量
+    # 初始化视图状态
     html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
-    final_result = errors = model_actions = model_thoughts = ""
-    recording_gif = trace = history_file = None
     
-    # 如果启用loop，则进入无限循环；否则，只执行一次
-    continue_loop = True
-    while continue_loop:
+    # 记录循环状态
+    first_execution = True
+    
+    # 初始日志输出
+    if loop:
+        logger.info("循环模式：任务将循环执行直到手动停止")
+    else:
+        logger.info("非循环模式：任务将只执行一次")
+
+    # 主循环：循环模式下一直执行，非循环模式只执行一次
+    while loop or first_execution:
+        # 标记此次为已执行
+        first_execution = False
+        
         # 检查是否已经请求停止
-        is_stopped = False
-        
-        # 使用_global_agent_state检查全局停止标志
         if _global_agent_state and _global_agent_state.is_stop_requested():
-            is_stopped = True
-            logger.info("任务已手动停止 (全局状态)")
-        
-        # 如果还需要继续检查，查看_global_agent
-        if not is_stopped and _global_agent is not None:
-            # 使用安全的方式检查
-            try:
-                if getattr(_global_agent, "state", None) is not None:
-                    if getattr(_global_agent.state, "stopped", False):
-                        is_stopped = True
-            except (AttributeError, Exception) as e:
-                # 如果发生任何错误，不认为任务已停止，记录错误并继续
-                logger.warning(f"检查代理停止状态时发生错误: {str(e)}")
-            
-        if is_stopped:
+            logger.info("任务循环被用户手动停止")
             yield [
                 gr.HTML(value=html_content, visible=True),
-                final_result,
-                errors,
-                model_actions,
-                model_thoughts,
-                recording_gif,
-                trace,
-                history_file,
-                gr.update(value="Stop", interactive=True),  # 重新启用停止按钮
-                gr.update(interactive=True)  # 重新启用运行按钮
+                "", "", "", "", None, None, None,
+                gr.update(value="Stop", interactive=True),
+                gr.update(interactive=True)
             ]
             break
             
@@ -849,22 +835,25 @@ async def run_with_stream(
                     is_stopped = False
                     if _global_agent_state and _global_agent_state.is_stop_requested():
                         is_stopped = True
+                        logger.info("任务已手动停止 (全局状态)")
                     
                     if not is_stopped and _global_agent is not None:
                         try:
                             if getattr(_global_agent, "state", None) is not None:
                                 if getattr(_global_agent.state, "stopped", False):
                                     is_stopped = True
+                                    logger.info("任务已停止 (代理状态)")
                         except (AttributeError, Exception):
                             pass
                             
-                    # 如果用户请求停止或者不是循环模式，则退出循环
+                    # 如果是非循环模式或者用户主动停止，退出循环
                     if is_stopped or not loop:
-                        logger.info(f"任务完成，{'已手动停止' if is_stopped else '非循环模式，不再继续'}")
+                        loop_msg = "用户手动停止" if is_stopped else "非循环模式，任务已完成"
+                        logger.info(f"循环终止: {loop_msg}")
                         break
                     
-                    # 循环模式下需要延迟一段时间后继续下一轮
-                    logger.info("循环模式：准备开始下一轮执行...")
+                    # 只有循环模式才继续执行
+                    logger.info("循环模式：准备开始下一轮任务...")
                     await asyncio.sleep(1)
             else:
                 # 无头模式下
@@ -898,11 +887,6 @@ async def run_with_stream(
                         max_input_tokens=max_input_tokens
                     )
                 )
-
-                # 初始化值用于流式处理
-                html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
-                final_result = errors = model_actions = model_thoughts = ""
-                recording_gif = trace = history_file = None
 
                 # 周期性更新流，直到代理任务完成
                 while not agent_task.done():
@@ -948,49 +932,19 @@ async def run_with_stream(
                         html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Waiting for browser session...</h1>"
 
                     # 检查停止标志
-                    is_stopped = False
                     if _global_agent_state and _global_agent_state.is_stop_requested():
-                        is_stopped = True
-                    
-                    if not is_stopped and _global_agent is not None:
-                        try:
-                            if getattr(_global_agent, "state", None) is not None:
-                                if getattr(_global_agent.state, "stopped", False):
-                                    is_stopped = True
-                        except (AttributeError, Exception):
-                            pass
-                    
-                    if is_stopped:
+                        logger.info("任务循环被用户手动停止")
                         yield [
                             gr.HTML(value=html_content, visible=True),
-                            final_result,
-                            errors,
-                            model_actions,
-                            model_thoughts,
-                            recording_gif,
-                            trace,
-                            history_file,
-                            gr.update(value="Stopping...", interactive=False),  # stop_button
-                            gr.update(interactive=False),  # run_button
+                            "", "", "", "", None, None, None,
+                            gr.update(value="Stop", interactive=True),
+                            gr.update(interactive=True)
                         ]
-                        # 取消后台任务
-                        agent_task.cancel()
-                        
-                        # 记录任务取消
-                        _global_report_manager.end_task_record(False, "任务被用户取消")
-                        logger.info("任务被用户取消")
-                        
                         break
                     else:
                         yield [
                             gr.HTML(value=html_content, visible=True),
-                            final_result,
-                            errors,
-                            model_actions,
-                            model_thoughts,
-                            recording_gif,
-                            trace,
-                            history_file,
+                            "", "", "", "", None, None, None,
                             gr.update(),  # Re-enable stop button
                             gr.update()  # Re-enable run button
                         ]
@@ -1078,22 +1032,25 @@ async def run_with_stream(
                 is_stopped = False
                 if _global_agent_state and _global_agent_state.is_stop_requested():
                     is_stopped = True
+                    logger.info("任务已手动停止 (全局状态)")
                 
                 if not is_stopped and _global_agent is not None:
                     try:
                         if getattr(_global_agent, "state", None) is not None:
                             if getattr(_global_agent.state, "stopped", False):
                                 is_stopped = True
+                                logger.info("任务已停止 (代理状态)")
                     except (AttributeError, Exception):
                         pass
                         
-                # 如果用户请求停止或者不是循环模式，则退出循环
+                # 如果是非循环模式或者用户主动停止，退出循环
                 if is_stopped or not loop:
-                    logger.info(f"任务完成，{'已手动停止' if is_stopped else '非循环模式，不再继续'}")
+                    loop_msg = "用户手动停止" if is_stopped else "非循环模式，任务已完成"
+                    logger.info(f"循环终止: {loop_msg}")
                     break
                 
-                # 循环模式下需要延迟一段时间后继续下一轮
-                logger.info("循环模式：准备开始下一轮执行...")
+                # 只有循环模式才继续执行
+                logger.info("循环模式：准备开始下一轮任务...")
                 await asyncio.sleep(1)
                 
                 # 重置代理状态，准备下一轮（保留代理实例但清除某些状态）
@@ -1136,9 +1093,10 @@ async def run_with_stream(
                 gr.update(interactive=True)  # Re-enable run button
             ]
             
-            # 如果不是循环模式，设置continue_loop为False使其只执行一次
+            # 如果不是循环模式，立即退出循环
             if not loop:
-                continue_loop = False
+                logger.info("任务执行完毕，非循环模式，退出循环")
+                break
                 
             # 即使发生错误，也延迟一下并继续下一轮
             await asyncio.sleep(2)
@@ -1615,23 +1573,37 @@ def create_ui(theme_name="Ocean"):
                 )
 
             with gr.TabItem("📊 任务报表", id=9, visible=True):
-                refresh_report_button = gr.Button("🔄 刷新报表数据", variant="secondary")
-                export_excel_button = gr.Button("📑 导出Excel报表", variant="primary")
+                with gr.Row():
+                    refresh_report_button = gr.Button("🔄 刷新报表数据", variant="secondary")
+                    export_excel_button = gr.Button("📑 导出Excel报表", variant="primary")
+                
+                # 预加载提示
+                auto_refresh_info = gr.Markdown("*页面加载完成后会自动刷新数据*")
+                
                 report_status = gr.Textbox(label="状态", interactive=False)
                 
-                with gr.Row():
-                    with gr.Column():
-                        gr.Markdown("### 📈 统计信息")
-                        stats_output = gr.JSON(label="累计统计", interactive=False)
-                    
-                    with gr.Column():
-                        gr.Markdown("### 📅 最近任务")
-                        recent_tasks_output = gr.Dataframe(
-                            headers=["任务ID", "任务描述", "开始时间", "执行时长", "是否成功"],
-                            wrap=True
-                        )
+                gr.Markdown("### 📈 统计信息")
                 
-                report_file_output = gr.File(label="下载Excel报表", interactive=False, visible=False)
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 基础统计")
+                        total_executions = gr.Textbox(label="总执行次数", interactive=False)
+                        successful_executions = gr.Textbox(label="成功次数", interactive=False)
+                        failed_executions = gr.Textbox(label="失败次数", interactive=False)
+                        success_rate = gr.Textbox(label="完成率", interactive=False)
+                    
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 时间统计")
+                        total_duration = gr.Textbox(label="总运行时长", interactive=False)
+                        avg_duration = gr.Textbox(label="平均任务耗时", interactive=False)
+                        avg_successful_duration = gr.Textbox(label="成功任务平均耗时", interactive=False)
+                
+                gr.Markdown("### 📅 最近任务")
+                recent_tasks_output = gr.DataFrame(
+                    headers=["任务ID", "任务描述", "开始时间", "执行时长", "是否成功"]
+                )
+                
+                report_file_output = gr.File(label="下载Excel报表", visible=False)
                 
                 # 函数：获取报表数据
                 def get_report_data():
@@ -1648,7 +1620,17 @@ def create_ui(theme_name="Ocean"):
                             "✅" if task.success else "❌"
                         ])
                     
-                    return stats, recent_tasks
+                    # 返回详细的统计信息
+                    return (
+                        str(stats["total_executions"]),
+                        str(stats["successful_executions"]),
+                        str(stats["failed_executions"]),
+                        stats["success_rate"],
+                        stats["total_duration_formatted"],
+                        stats["avg_duration_formatted"],
+                        stats["avg_successful_duration_formatted"],
+                        recent_tasks
+                    )
                 
                 # 函数：导出Excel报表
                 def export_excel_report():
@@ -1665,7 +1647,16 @@ def create_ui(theme_name="Ocean"):
                 refresh_report_button.click(
                     fn=get_report_data,
                     inputs=[],
-                    outputs=[stats_output, recent_tasks_output]
+                    outputs=[
+                        total_executions,
+                        successful_executions,
+                        failed_executions,
+                        success_rate,
+                        total_duration,
+                        avg_duration,
+                        avg_successful_duration,
+                        recent_tasks_output
+                    ]
                 )
                 
                 # 绑定导出按钮
@@ -1673,13 +1664,6 @@ def create_ui(theme_name="Ocean"):
                     fn=export_excel_report,
                     inputs=[],
                     outputs=[report_status, report_file_output]
-                )
-                
-                # 页面加载时自动刷新一次报表数据
-                demo.load(
-                    fn=get_report_data,
-                    inputs=[],
-                    outputs=[stats_output, recent_tasks_output]
                 )
 
             with gr.TabItem("📁 UI Configuration", id=8):
