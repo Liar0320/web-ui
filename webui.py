@@ -148,26 +148,36 @@ async def stop_agent():
     向全局代理实例发送停止请求，并立即更新UI中的按钮状态，
     提供视觉反馈表明停止命令已发出，代理将在下一个安全点停止。
     
+    对于循环执行的任务，这将停止整个循环；对于单次任务，则只停止当前正在执行的任务。
+    
     Returns:
         tuple: 包含停止按钮和运行按钮的更新状态
     """
-    global _global_agent
+    global _global_agent, _global_agent_state
 
     try:
+        # 同时使用两种方式发送停止信号，确保能够停止任何类型的代理和循环
         if _global_agent is not None:
-            # Request stop
+            # 请求停止代理
             _global_agent.stop()
-        # Update UI immediately
-        message = "Stop requested - the agent will halt at the next safe point"
+            logger.info("已发送停止代理请求")
+            
+        # 设置全局停止标志，这将终止循环执行
+        if _global_agent_state is not None:
+            _global_agent_state.request_stop()
+            logger.info("已设置全局停止标志")
+            
+        # 更新UI立即反馈
+        message = "停止请求已发送 - 代理将在下一个安全点停止"
         logger.info(f"🛑 {message}")
 
-        # Return UI updates
+        # 返回UI更新信息
         return (
             gr.update(value="Stopping...", interactive=False),  # stop_button
             gr.update(interactive=False),  # run_button
         )
     except Exception as e:
-        error_msg = f"Error during stop: {str(e)}"
+        error_msg = f"停止过程中发生错误: {str(e)}"
         logger.error(error_msg)
         return (
             gr.update(value="Stop", interactive=True),
@@ -176,24 +186,31 @@ async def stop_agent():
 
 
 async def stop_research_agent():
-    """Request the agent to stop and update UI with enhanced feedback"""
+    """请求研究代理停止并更新UI状态
+    
+    专门用于停止深度研究代理，通过设置全局停止标志来终止代理的执行。
+    提供增强的反馈信息。
+    
+    Returns:
+        tuple: 包含UI更新信息
+    """
     global _global_agent_state
 
     try:
-        # Request stop
+        # 请求停止
         _global_agent_state.request_stop()
 
-        # Update UI immediately
-        message = "Stop requested - the agent will halt at the next safe point"
+        # 更新UI立即反馈
+        message = "停止请求已发送 - 研究代理将在下一个安全点停止"
         logger.info(f"🛑 {message}")
 
-        # Return UI updates
-        return (  # errors_output
+        # 返回UI更新信息
+        return (
             gr.update(value="Stopping...", interactive=False),  # stop_button
             gr.update(interactive=False),  # run_button
         )
     except Exception as e:
-        error_msg = f"Error during stop: {str(e)}"
+        error_msg = f"停止过程中发生错误: {str(e)}"
         logger.error(error_msg)
         return (
             gr.update(value="Stop", interactive=True),
@@ -664,16 +681,18 @@ async def run_with_stream(
         max_actions_per_step,
         tool_calling_method,
         chrome_cdp,
-        max_input_tokens
+        max_input_tokens,
+        loop
 ):
     """运行代理并流式更新UI
     
     运行浏览器代理并实时向UI发送更新，包括截图和状态信息。
     在无头模式下，通过定期截图提供可视化反馈。
-    支持无限循环执行，直到用户手动停止。
+    支持循环执行任务，直到用户手动停止。
     
     Args:
         与run_browser_agent函数参数相同
+        loop: 是否循环执行任务，True为循环执行直到手动停止，False为执行一次后停止
         
     Yields:
         list: 包含HTML内容和各种结果数据，用于实时更新UI
@@ -688,8 +707,9 @@ async def run_with_stream(
     final_result = errors = model_actions = model_thoughts = ""
     recording_gif = trace = history_file = None
     
-    # 无限循环执行任务，直到用户手动停止
-    while True:
+    # 如果启用loop，则进入无限循环；否则，只执行一次
+    continue_loop = True
+    while continue_loop:
         # 检查是否已经请求停止
         is_stopped = False
         
@@ -774,6 +794,10 @@ async def run_with_stream(
                         
                 if is_stopped:
                     break
+                
+                # 如果不是循环模式，设置continue_loop为False使其只执行一次
+                if not loop:
+                    continue_loop = False
                 
                 # 延迟一小段时间后继续下一轮
                 await asyncio.sleep(1)
@@ -917,6 +941,10 @@ async def run_with_stream(
                 if is_stopped:
                     break
                 
+                # 如果不是循环模式，设置continue_loop为False使其只执行一次
+                if not loop:
+                    continue_loop = False
+                    
                 # 在启动下一个循环前延迟一小段时间
                 await asyncio.sleep(1)
                 
@@ -955,6 +983,10 @@ async def run_with_stream(
                 gr.update(interactive=True)  # Re-enable run button
             ]
             
+            # 如果不是循环模式，设置continue_loop为False使其只执行一次
+            if not loop:
+                continue_loop = False
+                
             # 即使发生错误，也延迟一下并继续下一轮
             await asyncio.sleep(2)
 
@@ -1288,6 +1320,14 @@ def create_ui(theme_name="Ocean"):
                     value="",
                     interactive=True
                 )
+                
+                with gr.Row():
+                    loop = gr.Checkbox(
+                        label="循环执行",
+                        value=False,
+                        info="启用后任务会循环执行，直到手动停止",
+                        interactive=True
+                    )
 
                 with gr.Row():
                     run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
@@ -1356,7 +1396,7 @@ def create_ui(theme_name="Ocean"):
                     use_own_browser, keep_browser_open, headless, disable_security, window_w, window_h,
                     save_recording_path, save_agent_history_path, save_trace_path,  # Include the new path
                     enable_recording, task, add_infos, max_steps, use_vision, max_actions_per_step,
-                    tool_calling_method, chrome_cdp, max_input_tokens
+                    tool_calling_method, chrome_cdp, max_input_tokens, loop
                 ],
                 outputs=[
                     browser_view,  # Browser view
