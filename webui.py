@@ -157,9 +157,20 @@ async def stop_agent():
     Returns:
         tuple: 包含停止按钮和运行按钮的更新状态
     """
-    global _global_agent, _global_agent_state
+    global _global_agent, _global_agent_state, _global_report_manager
 
     try:
+        # 检查是否有正在运行的任务
+        has_running_task = (_global_agent is not None) or (_global_report_manager and _global_report_manager.current_task is not None)
+        
+        if not has_running_task:
+            # 如果没有运行中的任务，则不需要发送停止信号
+            logger.info("没有正在运行的任务，停止请求被忽略")
+            return (
+                gr.update(value="Stop", interactive=False),  # 禁用Stop按钮
+                gr.update(interactive=True),  # 保持Run按钮可用
+            )
+            
         # 同时使用两种方式发送停止信号，确保能够停止任何类型的代理和循环
         if _global_agent is not None:
             # 请求停止代理
@@ -198,9 +209,20 @@ async def stop_research_agent():
     Returns:
         tuple: 包含UI更新信息
     """
-    global _global_agent_state
+    global _global_agent_state, _global_agent
 
     try:
+        # 检查是否有正在运行的任务
+        has_running_task = (_global_agent is not None) or _global_agent_state.is_stop_requested() == False
+        
+        if not has_running_task:
+            # 如果没有运行中的任务，则不需要发送停止信号
+            logger.info("没有正在运行的研究任务，停止请求被忽略")
+            return (
+                gr.update(value="Stop", interactive=False),  # 禁用Stop按钮
+                gr.update(interactive=True),  # 保持Run按钮可用
+            )
+            
         # 请求停止
         _global_agent_state.request_stop()
 
@@ -714,6 +736,14 @@ async def run_with_stream(
     # 初始化视图状态
     html_content = f"<h1 style='width:{stream_vw}vw; height:{stream_vh}vh'>Using browser...</h1>"
     
+    # 首先更新Stop按钮为可交互状态
+    yield [
+        gr.HTML(value=html_content, visible=True),
+        "", "", "", "", None, None, None,
+        gr.update(value="Stop", interactive=True),  # 启用Stop按钮
+        gr.update(interactive=False)  # 禁用Run按钮
+    ]
+    
     # 记录循环状态
     first_execution = True
     
@@ -806,7 +836,7 @@ async def run_with_stream(
                             None,  # recording_gif
                             None,  # trace
                             None,  # history_file
-                            gr.update(value="Stop", interactive=True),  # stop_button
+                            gr.update(value="Stop", interactive=loop),  # stop_button - 非循环模式下任务结束后禁用
                             gr.update(interactive=True)  # run_button
                         ]
                     
@@ -834,7 +864,7 @@ async def run_with_stream(
                         None,  # recording_gif
                         None,  # trace
                         None,  # history_file
-                        gr.update(value="Stop", interactive=True),  # stop_button
+                        gr.update(value="Stop", interactive=loop),  # stop_button - 非循环模式下任务结束后禁用
                         gr.update(interactive=True)  # run_button
                     ]
                     
@@ -1033,8 +1063,8 @@ async def run_with_stream(
                     recording_gif,
                     trace,
                     history_file,
-                    gr.update(value="Stop", interactive=True),  # stop_button - 确保可以停止
-                    gr.update(interactive=True)  # run_button - 确保可以重新运行
+                    gr.update(value="Stop", interactive=loop),  # stop_button - 非循环模式下任务结束后禁用
+                    gr.update(interactive=True)  # run_button
                 ]
                 
                 # 检查是否需要停止循环
@@ -1098,7 +1128,7 @@ async def run_with_stream(
                 None,
                 None,
                 None,
-                gr.update(value="Stop", interactive=True),  # Re-enable stop button
+                gr.update(value="Stop", interactive=loop),  # Re-enable stop button
                 gr.update(interactive=True)  # Re-enable run button
             ]
             
@@ -1159,7 +1189,7 @@ async def run_deep_search(research_task, max_search_iteration_input, max_query_p
         headless: 是否使用无头模式
         chrome_cdp: Chrome CDP URL
         
-    Returns:
+    Yields:
         tuple: 包含研究报告Markdown内容、文件路径和UI更新信息
     """
     from src.utils.deep_research import deep_research
@@ -1167,25 +1197,34 @@ async def run_deep_search(research_task, max_search_iteration_input, max_query_p
 
     # Clear any previous stop request
     _global_agent_state.clear_stop()
+    
+    # 首先更新按钮状态，启用Stop按钮，禁用Research按钮
+    yield "", None, gr.update(value="Stop", interactive=True), gr.update(interactive=False)
 
-    llm = utils.get_llm_model(
-        provider=llm_provider,
-        model_name=llm_model_name,
-        num_ctx=llm_num_ctx,
-        temperature=llm_temperature,
-        base_url=llm_base_url,
-        api_key=llm_api_key,
-    )
-    markdown_content, file_path = await deep_research(research_task, llm, _global_agent_state,
-                                                      max_search_iterations=max_search_iteration_input,
-                                                      max_query_num=max_query_per_iter_input,
-                                                      use_vision=use_vision,
-                                                      headless=headless,
-                                                      use_own_browser=use_own_browser,
-                                                      chrome_cdp=chrome_cdp
-                                                      )
-
-    return markdown_content, file_path, gr.update(value="Stop", interactive=True), gr.update(interactive=True)
+    try:
+        llm = utils.get_llm_model(
+            provider=llm_provider,
+            model_name=llm_model_name,
+            num_ctx=llm_num_ctx,
+            temperature=llm_temperature,
+            base_url=llm_base_url,
+            api_key=llm_api_key,
+        )
+        markdown_content, file_path = await deep_research(research_task, llm, _global_agent_state,
+                                                        max_search_iterations=max_search_iteration_input,
+                                                        max_query_num=max_query_per_iter_input,
+                                                        use_vision=use_vision,
+                                                        headless=headless,
+                                                        use_own_browser=use_own_browser,
+                                                        chrome_cdp=chrome_cdp
+                                                        )
+        
+        # 最终结果
+        yield markdown_content, file_path, gr.update(value="Stop", interactive=True), gr.update(interactive=True)
+    except Exception as e:
+        import traceback
+        error_message = f"研究过程中发生错误: {str(e)}\n{traceback.format_exc()}"
+        yield f"## 错误\n\n{error_message}", None, gr.update(value="Stop", interactive=True), gr.update(interactive=True)
 
 
 def create_ui(theme_name="Ocean"):
@@ -1451,7 +1490,7 @@ def create_ui(theme_name="Ocean"):
 
                 with gr.Row():
                     run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
-                    stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1)
+                    stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1, interactive=False)  # 初始设置为不可交互
                     reset_button = gr.Button("🔄 Reset", variant="secondary", scale=1)
 
                 with gr.Row():
@@ -1497,19 +1536,32 @@ def create_ui(theme_name="Ocean"):
                                                          interactive=True)  # precision=0 确保是整数
                 with gr.Row():
                     research_button = gr.Button("▶️ Run Deep Research", variant="primary", scale=2)
-                    stop_research_button = gr.Button("⏹ Stop", variant="stop", scale=1)
+                    stop_research_button = gr.Button("⏹ Stop", variant="stop", scale=1, interactive=False)  # 初始设置为不可交互
                 markdown_output_display = gr.Markdown(label="Research Report")
                 markdown_download = gr.File(label="Download Research Report")
 
             # 添加重置功能，清除停止标志
             async def reset_agent_state():
-                global _global_agent_state
+                global _global_agent_state, _global_agent, _global_report_manager
+                
+                # 清除全局停止标志
                 if _global_agent_state:
                     _global_agent_state.clear_stop()
-                    logger.info("已手动重置代理状态，清除停止标志")
+                    logger.info("已清除全局停止标志")
+                
+                # 确保代理实例为空
+                _global_agent = None
+                
+                # 如果有未完成的任务，结束它
+                if _global_report_manager and _global_report_manager.current_task:
+                    logger.info("结束未完成的任务记录")
+                    _global_report_manager.end_task_record(False, "用户手动重置")
+                
+                # 返回UI更新
                 return (
                     gr.update(interactive=True),  # run_button
-                    "已重置代理状态，可以重新运行任务"  # 状态消息
+                    gr.update(value="Stop", interactive=False),  # stop_button - 重置时禁用Stop按钮
+                    "已重置代理状态，所有标志已清除"  # 状态消息，清除任何错误
                 )
 
             # Bind the stop button click event after errors_output is defined
@@ -1523,7 +1575,7 @@ def create_ui(theme_name="Ocean"):
             reset_button.click(
                 fn=reset_agent_state,
                 inputs=[],
-                outputs=[run_button, errors_output]
+                outputs=[run_button, stop_button, errors_output]
             )
 
             # Run button click handler
