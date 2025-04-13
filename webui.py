@@ -50,7 +50,17 @@ webui_config_manager = utils.ConfigManager()
 
 
 def scan_and_register_components(blocks):
-    """扫描一个 Blocks 对象并注册其中的所有交互式组件，但不包括按钮"""
+    """扫描一个Blocks对象并注册其中的所有交互式组件，但不包括按钮
+    
+    该函数递归遍历Gradio的Blocks对象，找到所有交互式组件并注册到全局配置管理器中，
+    以便后续可以保存和加载UI配置。
+    
+    Args:
+        blocks: Gradio Blocks对象，包含UI组件
+        
+    Returns:
+        int: 注册的组件总数
+    """
     global webui_config_manager
 
     def traverse_blocks(block, prefix=""):
@@ -82,10 +92,28 @@ def scan_and_register_components(blocks):
 
 
 def save_current_config():
+    """保存当前WebUI配置到JSON文件
+    
+    将UI中所有注册组件的当前状态和值保存到配置文件中，
+    以便稍后可以恢复相同的UI状态。
+    
+    Returns:
+        str: 保存状态信息
+    """
     return webui_config_manager.save_current_config()
 
 
 def update_ui_from_config(config_file):
+    """从配置文件更新WebUI界面
+    
+    读取上传的配置文件，并将其中的值应用到当前UI的所有注册组件。
+    
+    Args:
+        config_file: 上传的配置文件对象
+        
+    Returns:
+        str: 更新状态信息
+    """
     return webui_config_manager.update_ui_from_config(config_file)
 
 
@@ -115,7 +143,14 @@ def resolve_sensitive_env_variables(text):
 
 
 async def stop_agent():
-    """Request the agent to stop and update UI with enhanced feedback"""
+    """请求代理停止并更新UI状态
+    
+    向全局代理实例发送停止请求，并立即更新UI中的按钮状态，
+    提供视觉反馈表明停止命令已发出，代理将在下一个安全点停止。
+    
+    Returns:
+        tuple: 包含停止按钮和运行按钮的更新状态
+    """
     global _global_agent
 
     try:
@@ -193,6 +228,41 @@ async def run_browser_agent(
         chrome_cdp,
         max_input_tokens
 ):
+    """运行浏览器代理执行任务
+    
+    根据提供的配置参数初始化并运行浏览器代理。支持多种LLM模型、浏览器配置选项，
+    并能够保存执行记录、历史和跟踪信息。
+    
+    Args:
+        agent_type: 代理类型，可以是'org'或'custom'
+        llm_provider: 语言模型提供商(如openai, anthropic)
+        llm_model_name: 使用的模型名称
+        llm_num_ctx: 上下文窗口大小
+        llm_temperature: 生成温度参数
+        llm_base_url: API基础URL
+        llm_api_key: API密钥
+        use_own_browser: 是否使用自有浏览器
+        keep_browser_open: 任务间保持浏览器打开
+        headless: 无头模式
+        disable_security: 是否禁用安全特性
+        window_w: 窗口宽度
+        window_h: 窗口高度
+        save_recording_path: 录制视频保存路径
+        save_agent_history_path: 代理历史保存路径
+        save_trace_path: 跟踪信息保存路径
+        enable_recording: 是否启用录制
+        task: 任务描述
+        add_infos: 附加信息
+        max_steps: 最大步骤数
+        use_vision: 是否使用视觉能力
+        max_actions_per_step: 每步最大动作数
+        tool_calling_method: 工具调用方法
+        chrome_cdp: Chrome CDP URL
+        max_input_tokens: 最大输入token数
+        
+    Returns:
+        tuple: 包含执行结果、错误信息、模型动作、模型思考、GIF路径、跟踪文件、历史文件和UI更新信息
+    """
     try:
         # Disable recording if the checkbox is unchecked
         if not enable_recording:
@@ -265,16 +335,6 @@ async def run_browser_agent(
         else:
             raise ValueError(f"Invalid agent type: {agent_type}")
 
-        # Get the list of videos after the agent runs (if recording is enabled)
-        # latest_video = None
-        # if save_recording_path:
-        #     new_videos = set(
-        #         glob.glob(os.path.join(save_recording_path, "*.[mM][pP]4"))
-        #         + glob.glob(os.path.join(save_recording_path, "*.[wW][eE][bB][mM]"))
-        #     )
-        #     if new_videos - existing_videos:
-        #         latest_video = list(new_videos - existing_videos)[0]  # Get the first new video
-
         gif_path = os.path.join(os.path.dirname(__file__), "agent_history.gif")
 
         return (
@@ -329,6 +389,33 @@ async def run_org_agent(
         chrome_cdp,
         max_input_tokens
 ):
+    """运行官方浏览器代理
+    
+    使用原始browser-use代码库中的Agent类初始化并运行浏览器代理。
+    负责创建浏览器实例、上下文环境并执行指定任务。
+    
+    Args:
+        llm: 语言模型实例
+        use_own_browser: 是否使用自有浏览器
+        keep_browser_open: 是否在任务间保持浏览器打开
+        headless: 是否使用无头模式
+        disable_security: 是否禁用安全特性
+        window_w: 窗口宽度
+        window_h: 窗口高度
+        save_recording_path: 录像保存路径
+        save_agent_history_path: 代理历史保存路径
+        save_trace_path: 跟踪信息保存路径
+        task: 任务描述
+        max_steps: 最大执行步骤数
+        use_vision: 是否使用视觉功能
+        max_actions_per_step: 每步最大动作数
+        tool_calling_method: 工具调用方法
+        chrome_cdp: Chrome CDP URL
+        max_input_tokens: 最大输入token数
+        
+    Returns:
+        tuple: 包含执行结果、错误信息、模型动作、模型思考、跟踪文件和历史文件路径
+    """
     try:
         global _global_browser, _global_browser_context, _global_agent
 
@@ -432,6 +519,34 @@ async def run_custom_agent(
         chrome_cdp,
         max_input_tokens
 ):
+    """运行自定义浏览器代理
+    
+    使用自定义代理类初始化并运行浏览器代理，提供了对原始Agent的扩展功能。
+    支持更多自定义提示词和控制器设置。
+    
+    Args:
+        llm: 语言模型实例
+        use_own_browser: 是否使用自有浏览器
+        keep_browser_open: 是否在任务间保持浏览器打开
+        headless: 是否使用无头模式
+        disable_security: 是否禁用安全特性
+        window_w: 窗口宽度
+        window_h: 窗口高度
+        save_recording_path: 录像保存路径
+        save_agent_history_path: 代理历史保存路径
+        save_trace_path: 跟踪信息保存路径
+        task: 任务描述
+        add_infos: 附加信息
+        max_steps: 最大执行步骤数
+        use_vision: 是否使用视觉功能
+        max_actions_per_step: 每步最大动作数
+        tool_calling_method: 工具调用方法
+        chrome_cdp: Chrome CDP URL
+        max_input_tokens: 最大输入token数
+        
+    Returns:
+        tuple: 包含执行结果、错误信息、模型动作、模型思考、跟踪文件和历史文件路径
+    """
     try:
         global _global_browser, _global_browser_context, _global_agent
 
@@ -551,6 +666,17 @@ async def run_with_stream(
         chrome_cdp,
         max_input_tokens
 ):
+    """运行代理并流式更新UI
+    
+    运行浏览器代理并实时向UI发送更新，包括截图和状态信息。
+    在无头模式下，通过定期截图提供可视化反馈。
+    
+    Args:
+        与run_browser_agent函数参数相同
+        
+    Yields:
+        list: 包含HTML内容和各种结果数据，用于实时更新UI
+    """
     global _global_agent
 
     stream_vw = 80
@@ -735,6 +861,29 @@ async def close_global_browser():
 async def run_deep_search(research_task, max_search_iteration_input, max_query_per_iter_input, llm_provider,
                           llm_model_name, llm_num_ctx, llm_temperature, llm_base_url, llm_api_key, use_vision,
                           use_own_browser, headless, chrome_cdp):
+    """运行深度搜索研究功能
+    
+    使用浏览器代理执行深度研究任务，可以迭代搜索并汇总信息，
+    生成完整的研究报告。
+    
+    Args:
+        research_task: 研究任务描述
+        max_search_iteration_input: 最大搜索迭代次数
+        max_query_per_iter_input: 每次迭代的最大查询数
+        llm_provider: 语言模型提供商
+        llm_model_name: 模型名称
+        llm_num_ctx: 上下文窗口大小
+        llm_temperature: 生成温度
+        llm_base_url: API基础URL
+        llm_api_key: API密钥
+        use_vision: 是否使用视觉功能
+        use_own_browser: 是否使用自有浏览器
+        headless: 是否使用无头模式
+        chrome_cdp: Chrome CDP URL
+        
+    Returns:
+        tuple: 包含研究报告Markdown内容、文件路径和UI更新信息
+    """
     from src.utils.deep_research import deep_research
     global _global_agent_state
 
@@ -762,6 +911,17 @@ async def run_deep_search(research_task, max_search_iteration_input, max_query_p
 
 
 def create_ui(theme_name="Ocean"):
+    """创建浏览器代理Web用户界面
+    
+    创建完整的Gradio Web界面，包括多个选项卡用于配置模型、浏览器设置、运行代理和查看结果。
+    支持切换主题、保存/加载配置等功能。
+    
+    Args:
+        theme_name: 界面主题名称，默认为"Ocean"
+        
+    Returns:
+        gr.Blocks: Gradio界面对象
+    """
     css = """
     .gradio-container {
         width: 60vw !important; 
@@ -850,14 +1010,14 @@ def create_ui(theme_name="Ocean"):
                     llm_provider = gr.Dropdown(
                         choices=[provider for provider, model in utils.model_names.items()],
                         label="LLM Provider",
-                        value="openai",
+                        value="deepseek",
                         info="Select your preferred language model provider",
                         interactive=True
                     )
                     llm_model_name = gr.Dropdown(
                         label="Model Name",
                         choices=utils.model_names['openai'],
-                        value="gpt-4o",
+                        value="deepseek-chat-v3-0324:free",
                         interactive=True,
                         allow_custom_value=True,  # Allow users to input custom model names
                         info="Select a model in the dropdown options or directly type a custom model name"
