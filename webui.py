@@ -1590,13 +1590,13 @@ def create_ui(theme_name="Ocean"):
                         total_executions = gr.Textbox(label="总执行次数", interactive=False)
                         successful_executions = gr.Textbox(label="成功次数", interactive=False)
                         failed_executions = gr.Textbox(label="失败次数", interactive=False)
-                        success_rate = gr.Textbox(label="完成率", interactive=False)
+                        success_rate = gr.Textbox(label="成功率", interactive=False)
                     
                     with gr.Column(scale=1):
                         gr.Markdown("#### 时间统计")
                         total_duration = gr.Textbox(label="总运行时长", interactive=False)
-                        avg_duration = gr.Textbox(label="平均任务耗时", interactive=False)
-                        avg_successful_duration = gr.Textbox(label="成功任务平均耗时", interactive=False)
+                        avg_duration = gr.Textbox(label="总任务平均每次耗时", interactive=False)
+                        avg_successful_duration = gr.Textbox(label="完成任务平均每次耗时", interactive=False)
                 
                 gr.Markdown("### 📅 最近任务")
                 recent_tasks_output = gr.DataFrame(
@@ -1712,6 +1712,22 @@ def create_ui(theme_name="Ocean"):
             fn=update_ui_from_config,
             inputs=[config_file_input],
             outputs=all_components + [config_status]
+        )
+        
+        # 添加应用启动时自动加载报表数据
+        demo.load(
+            fn=get_report_data,
+            inputs=None,
+            outputs=[
+                total_executions,
+                successful_executions,
+                failed_executions,
+                success_rate,
+                total_duration,
+                avg_duration,
+                avg_successful_duration,
+                recent_tasks_output
+            ]
         )
     return demo
 

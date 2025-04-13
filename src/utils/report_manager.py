@@ -194,6 +194,22 @@ class ReportManager:
     def export_excel(self, output_path: str = "./tmp/reports/task_report.xlsx") -> Optional[str]:
         """导出Excel报表"""
         try:
+            # 检查pandas是否可用
+            try:
+                import pandas as pd
+                logger.info("pandas 已成功导入")
+            except ImportError as e:
+                logger.error(f"导入pandas时出错: {e}")
+                return None
+                
+            # 检查openpyxl是否可用
+            try:
+                import openpyxl
+                logger.info("openpyxl 已成功导入，版本: {0}".format(openpyxl.__version__))
+            except ImportError as e:
+                logger.error(f"导入openpyxl时出错: {e}")
+                return None
+                
             # 确保目录存在
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
@@ -222,7 +238,10 @@ class ReportManager:
                 ["总执行次数", stats["total_executions"]],
                 ["成功次数", stats["successful_executions"]],
                 ["失败次数", stats["failed_executions"]],
-                ["总运行时长", stats["total_duration_formatted"]]
+                ["成功率", stats["success_rate"]],
+                ["总运行时长", stats["total_duration_formatted"]],
+                ["总任务平均每次耗时", stats["avg_duration_formatted"]],
+                ["完成任务平均每次耗时", stats["avg_successful_duration_formatted"]]
             ]
             df_stats = pd.DataFrame(stats_data, columns=["统计项", "数值"])
             
@@ -257,17 +276,30 @@ class ReportManager:
             
             df_dates = pd.DataFrame(date_records)
             
-            # 创建Excel文件
-            with pd.ExcelWriter(output_path) as writer:
-                df_tasks.to_excel(writer, sheet_name='任务执行记录', index=False)
-                df_stats.to_excel(writer, sheet_name='累计统计', index=False)
-                df_dates.to_excel(writer, sheet_name='日期统计', index=False)
-            
-            logger.info(f"报表已导出至: {output_path}")
-            return output_path
+            # 尝试创建Excel文件
+            try:
+                # 创建Excel文件
+                logger.info(f"尝试创建Excel文件: {output_path}")
+                with pd.ExcelWriter(output_path) as writer:
+                    logger.info("写入任务执行记录表")
+                    df_tasks.to_excel(writer, sheet_name='任务执行记录', index=False)
+                    logger.info("写入累计统计表")
+                    df_stats.to_excel(writer, sheet_name='累计统计', index=False)
+                    logger.info("写入日期统计表")
+                    df_dates.to_excel(writer, sheet_name='日期统计', index=False)
+                
+                logger.info(f"报表已导出至: {output_path}")
+                return output_path
+            except Exception as e:
+                logger.error(f"写入Excel文件时出错: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return None
         
         except Exception as e:
             logger.error(f"导出Excel报表失败: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
 # 创建全局报表管理器实例
