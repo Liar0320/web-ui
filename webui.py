@@ -42,7 +42,7 @@ from src.agent.custom_prompts import CustomSystemPrompt, CustomAgentMessagePromp
 from src.browser.custom_context import BrowserContextConfig, CustomBrowserContext
 from src.controller.custom_controller import CustomController
 from gradio.themes import Citrus, Default, Glass, Monochrome, Ocean, Origin, Soft, Base
-from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot, MissingAPIKeyError
+from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot, MissingAPIKeyError, save_config_to_default_file
 from src.utils import utils
 from src.utils.report_manager import get_report_manager
 from src.utils.deep_research import deep_research
@@ -86,6 +86,12 @@ def scan_and_register_components(blocks):
                             # 使用标签作为名称的一部分
                             label = child.label
                             name = f"{prefix}{label}"
+                            
+                        # 对Base URL和API Key组件进行特殊处理
+                        if getattr(child, "label", "") == "Base URL" or getattr(child, "label", "") == "API Key":
+                            # 输出更多调试信息
+                            logger.info(f"特殊处理注册组件: {name}, 标签: {getattr(child, 'label', '')}")
+                            
                         logger.debug(f"Registering component: {name}")
                         webui_config_manager.register_component(name, child)
                         registered += 1
@@ -95,6 +101,15 @@ def scan_and_register_components(blocks):
                     registered += traverse_blocks(child, new_prefix)
 
         return registered
+
+    # 特殊处理：确保llm_base_url和llm_api_key直接注册
+    for component_name in ["llm_base_url", "llm_api_key"]:
+        if component_name in globals():
+            component = globals()[component_name]
+            label = getattr(component, "label", "")
+            name = f"direct_{label}"
+            logger.info(f"直接注册组件: {name}")
+            webui_config_manager.register_component(name, component)
 
     total = traverse_blocks(blocks)
     logger.info(f"Total registered components: {total}")
@@ -1379,14 +1394,66 @@ def create_ui(theme_name="Ocean"):
                         llm_base_url = gr.Textbox(
                             label="Base URL",
                             value="",
-                            info="API endpoint URL (if required)"
+                            info="API endpoint URL (if required)",
+                            interactive=True  # 确保是可交互的
                         )
                         llm_api_key = gr.Textbox(
                             label="API Key",
                             type="password",
                             value="",
-                            info="Your API key (leave blank to use .env)"
+                            info="Your API key (leave blank to use .env)",
+                            interactive=True  # 确保是可交互的
                         )
+                    
+                    # 为Base URL添加专门的处理函数
+                    def handle_base_url_change(new_value):
+                        logger.info(f"Base URL值已变更为: {new_value}")
+                        # 直接更新组件值
+                        llm_base_url.value = new_value
+                        # 强制保存配置
+                        current_config = {}
+                        for name, comp in webui_config_manager.components.items():
+                            current_config[name] = getattr(comp, "value", None)
+                            # 特殊处理Base URL
+                            if "Base URL" in name:
+                                current_config[name] = new_value
+                        
+                        # 保存到默认配置文件
+                        result = save_config_to_default_file(current_config, webui_config_manager.autosave_dir)
+                        logger.info(f"Base URL变更触发配置保存: {result}")
+                        return new_value
+                    
+                    # 为API Key添加专门的处理函数
+                    def handle_api_key_change(new_value):
+                        logger.info(f"API Key值已变更")
+                        # 直接更新组件值
+                        llm_api_key.value = new_value
+                        # 强制保存配置
+                        current_config = {}
+                        for name, comp in webui_config_manager.components.items():
+                            current_config[name] = getattr(comp, "value", None)
+                            # 特殊处理API Key
+                            if "API Key" in name:
+                                current_config[name] = new_value
+                        
+                        # 保存到默认配置文件
+                        result = save_config_to_default_file(current_config, webui_config_manager.autosave_dir)
+                        logger.info(f"API Key变更触发配置保存: {result}")
+                        return new_value
+                    
+                    # 使用专用处理函数而非通用change事件
+                    llm_base_url.change(
+                        fn=handle_base_url_change,
+                        inputs=[llm_base_url],
+                        outputs=[llm_base_url]
+                    )
+                    
+                    # 使用专用处理函数
+                    llm_api_key.change(
+                        fn=handle_api_key_change,
+                        inputs=[llm_api_key],
+                        outputs=[llm_api_key]
+                    )
 
             # Change event to update context length slider
             def update_llm_num_ctx_visibility(llm_provider):
@@ -1807,9 +1874,10 @@ def create_ui(theme_name="Ocean"):
 
         # Attach the callback to the LLM provider dropdown
         llm_provider.change(
-            lambda provider, api_key, base_url: update_model_dropdown(provider, api_key, base_url),
-            inputs=[llm_provider, llm_api_key, llm_base_url],
-            outputs=llm_model_name
+            lambda provider, api_key, base_url, current_model: update_model_dropdown(provider, api_key, base_url, current_model),
+            inputs=[llm_provider, llm_api_key, llm_base_url, llm_model_name],
+            outputs=llm_model_name,
+            api_name=False  # 禁用API生成，减少潜在的闪烁
         )
 
         # Add this after defining the components

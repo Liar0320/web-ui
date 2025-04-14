@@ -191,14 +191,15 @@ model_names = {
 
 
 # Callback to update the model name dropdown based on the selected provider
-def update_model_dropdown(llm_provider, api_key=None, base_url=None):
+def update_model_dropdown(llm_provider, api_key=None, base_url=None, current_value=None):
     """
     更新模型下拉列表的选项，根据用户选择的模型提供商。
     
     Args:
-        llm_provider: 模型提供商名称
+        llm_provider: A模型提供商名称
         api_key: 可选的API密钥
         base_url: 可选的基础URL
+        current_value: 当前选中的值，如果提供则保留此值
         
     Returns:
         gr.update对象，包含更新后的下拉菜单选项和值
@@ -207,7 +208,7 @@ def update_model_dropdown(llm_provider, api_key=None, base_url=None):
     import logging
     logger = logging.getLogger(__name__)
     
-    logger.info(f"更新模型下拉菜单，提供商: {llm_provider}")
+    logger.info(f"更新模型下拉菜单，提供商: {llm_provider}, 当前值: {current_value}")
     
     # 使用环境变量中的API密钥（如果未提供）
     if not api_key:
@@ -218,12 +219,20 @@ def update_model_dropdown(llm_provider, api_key=None, base_url=None):
     # 使用预定义的模型列表
     if llm_provider in model_names:
         model_list = model_names[llm_provider]
-        default_model = model_list[0] if model_list else ""
-        logger.info(f"找到提供商 {llm_provider} 的 {len(model_list)} 个模型，默认值: {default_model}")
+        
+        # 如果有传入的当前值且该值在列表中，使用它
+        # 否则，如果有传入的当前值但不在列表中，仍然使用它（可能是自定义值）
+        # 如果没有传入值，使用列表的第一个值作为默认值
+        if current_value:
+            default_model = current_value
+        else:
+            default_model = model_list[0] if model_list else ""
+            
+        logger.info(f"找到提供商 {llm_provider} 的 {len(model_list)} 个模型，使用值: {default_model}")
         return gr.update(choices=model_list, value=default_model)
     else:
         logger.warning(f"未找到提供商 {llm_provider} 的模型列表")
-        return gr.update(choices=[], value="", allow_custom_value=True)
+        return gr.update(choices=[], value=current_value or "", allow_custom_value=True)
 
 
 class MissingAPIKeyError(Exception):
@@ -412,13 +421,24 @@ class ConfigAutosaveManager(ConfigManager):
     
     def _on_component_change(self, component_name, new_value):
         """组件值变更时自动保存配置"""
+        logger = logging.getLogger(__name__)
         try:
+            # 记录组件变更
+            if "Base URL" in component_name or "API Key" in component_name:
+                # 对敏感信息不显示具体内容
+                logger.info(f"组件 {component_name} 值已变更")
+            else:
+                logger.info(f"组件 {component_name} 值已变更为: {new_value}")
+                
             # 更新组件的值
             if component_name in self.components:
                 component = self.components[component_name]
                 if hasattr(component, "value"):
+                    old_value = component.value
                     component.value = new_value
-                    logging.getLogger(__name__).debug(f"组件 {component_name} 值已更新为: {new_value}")
+                    logger.debug(f"组件 {component_name} 值已从 {old_value} 更新为 {new_value}")
+            else:
+                logger.warning(f"组件 {component_name} 不在注册列表中，无法更新值")
             
             # 检查是否启用了自动保存 (通过UI组件的值)
             auto_save_enabled = True  # 默认启用
@@ -430,10 +450,14 @@ class ConfigAutosaveManager(ConfigManager):
                     break
             
             if auto_save_enabled:
-                self.autosave_current_config()
+                result = self.autosave_current_config()
+                logger.info(f"自动保存配置结果: {result}")
+            else:
+                logger.info("自动保存已禁用，跳过保存")
+                
             return None
         except Exception as e:
-            logging.getLogger(__name__).error(f"自动保存配置失败: {str(e)}")
+            logger.error(f"自动保存配置失败: {str(e)}")
             return None
     
     def autosave_current_config(self):
